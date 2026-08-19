@@ -2,49 +2,77 @@ package linq
 
 import (
 	"context"
-	"fmt"
 	"iter"
-	"reflect"
+	"slices"
 )
 
-// Query is the type returned from query functions. It can be iterated manually
+// Query is the type returned from query functions. It represents a lazy,
+// strongly-typed sequence of elements of type T. It can be iterated manually
 // as shown in the example.
-type Query struct {
-	Iterate iter.Seq[any]
+type Query[T any] struct {
+	Iterate iter.Seq[T]
+
+	// size hints the exact number of elements the query yields, when that is
+	// cheaply known; zero means unknown. Sources with a known length set it,
+	// and only operators that emit exactly one element per source element may
+	// propagate it. Operators that change cardinality need to do nothing:
+	// they construct a fresh Query without the field, and the hint safely
+	// zeroes out.
+	//
+	// The hint is consumed only as the capacity of preallocated result
+	// slices, so it can never change what a query produces. A missing hint
+	// forfeits the preallocation; a stale one (e.g., a source map mutated
+	// after the query was built) merely mis-sizes it.
+	size int
 }
 
-// KeyValue is a type used to iterate over a map. This type is also used by ToMap()
-// method to output the result of a query into a map.
-type KeyValue struct {
-	Key   any
-	Value any
+// collect gathers all elements into a slice, preallocating when the query
+// carries a size hint. The hinted allocation is deferred until the first
+// element arrives so that an empty query collects to nil even when a stale
+// hint promises elements, matching slices.Collect on the unhinted path.
+func (q Query[T]) collect() []T {
+	if size := q.size; size > 0 {
+		var out []T
+		q.Iterate(func(item T) bool {
+			if out == nil {
+				out = make([]T, 0, size)
+			}
+			out = append(out, item)
+			return true
+		})
+		return out
+	}
+	return slices.Collect(q.Iterate)
 }
 
-// Iterable is an interface that has to be implemented by a custom collection
-// to work with linq.
-type Iterable interface {
-	Iterate() iter.Seq[any]
+// KeyValue is a type used to iterate over a map. This type is also used by
+// the ToMap function to output the result of a query into a map.
+type KeyValue[TKey comparable, TValue any] struct {
+	Key   TKey
+	Value TValue
 }
 
 // FromSlice initializes a linq query with a passed slice.
-func FromSlice[S ~[]T, T any](source S) Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
+func FromSlice[S ~[]T, T any](source S) Query[T] {
+	return Query[T]{
+		Iterate: func(yield func(T) bool) {
 			for _, item := range source {
 				if !yield(item) {
 					return
 				}
 			}
 		},
+		size: len(source),
 	}
 }
 
-// FromMap initializes a linq query with a passed map.
-func FromMap[M ~map[K]V, K comparable, V any](source M) Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
+// FromMap initializes a linq query with a passed map. Elements are yielded as
+// KeyValue pairs, in unspecified order.
+func FromMap[M ~map[TKey]TValue, TKey comparable, TValue any](source M) Query[KeyValue[TKey, TValue]] {
+	return Query[KeyValue[TKey, TValue]]{
+		Iterate: func(yield func(KeyValue[TKey, TValue]) bool) {
 			for k, v := range source {
-				if !yield(KeyValue{
+				if !yield(KeyValue[TKey, TValue]{
 					Key:   k,
 					Value: v,
 				}) {
@@ -52,14 +80,15 @@ func FromMap[M ~map[K]V, K comparable, V any](source M) Query {
 				}
 			}
 		},
+		size: len(source),
 	}
 }
 
 // FromChannel initializes a linq query with a passed channel, linq iterates over
 // the channel until it is closed.
-func FromChannel[T any](source <-chan T) Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
+func FromChannel[T any](source <-chan T) Query[T] {
+	return Query[T]{
+		Iterate: func(yield func(T) bool) {
 			for item := range source {
 				if !yield(item) {
 					return
@@ -71,9 +100,9 @@ func FromChannel[T any](source <-chan T) Query {
 
 // FromChannelWithContext initializes a linq query with a passed channel
 // and stops iterating either when the channel is closed or when the context is canceled.
-func FromChannelWithContext[T any](ctx context.Context, source <-chan T) Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
+func FromChannelWithContext[T any](ctx context.Context, source <-chan T) Query[T] {
+	return Query[T]{
+		Iterate: func(yield func(T) bool) {
 			for {
 				select {
 				case <-ctx.Done():
@@ -91,9 +120,9 @@ func FromChannelWithContext[T any](ctx context.Context, source <-chan T) Query {
 }
 
 // FromString initializes a query from a string, iterating over its runes.
-func FromString[S ~string](source S) Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
+func FromString[S ~string](source S) Query[rune] {
+	return Query[rune]{
+		Iterate: func(yield func(rune) bool) {
 			for _, ch := range string(source) {
 				if !yield(ch) {
 					return
@@ -103,81 +132,19 @@ func FromString[S ~string](source S) Query {
 	}
 }
 
-// FromIterable initializes a linq query with a custom collection passed. This
-// collection has to implement Iterable.
-func FromIterable(source Iterable) Query {
-	return Query{
-		Iterate: source.Iterate(),
-	}
-}
-
-// From initializes a Query from a supported data source by inspecting its
-// type at runtime. It panics if the source type is not supported.
-//
-// NOTE: It is recommended to call the specific From* function directly
-// (e.g., FromSlice, FromMap, etc.). This unified function is less efficient
-// because it relies on runtime reflection.
-func From(source any) Query {
-	if source == nil {
-		return Query{
-			Iterate: func(yield func(any) bool) {},
-		}
-	}
-
-	switch s := source.(type) {
-	case string:
-		return FromString(s)
-	case Iterable:
-		return FromIterable(s)
-	}
-
-	sourceValue := reflect.ValueOf(source)
-	switch sourceValue.Kind() {
-	case reflect.Slice, reflect.Array:
-		return Query{
-			Iterate: func(yield func(any) bool) {
-				length := sourceValue.Len()
-				for i := 0; i < length; i++ {
-					if !yield(sourceValue.Index(i).Interface()) {
-						return
-					}
-				}
-			},
-		}
-
-	case reflect.Map:
-		return Query{
-			Iterate: func(yield func(any) bool) {
-				for _, key := range sourceValue.MapKeys() {
-					value := sourceValue.MapIndex(key)
-					if !yield(KeyValue{Key: key.Interface(), Value: value.Interface()}) {
-						return
-					}
-				}
-			},
-		}
-
-	case reflect.Chan:
-		return Query{
-			Iterate: func(yield func(any) bool) {
-				for {
-					value, ok := sourceValue.Recv()
-					if !ok || !yield(value.Interface()) {
-						return
-					}
-				}
-			},
-		}
-
-	default:
-		panic(fmt.Sprintf("unsupported type for From: %T", source))
+// FromSeq initializes a linq query from an iter.Seq. This allows any
+// range-over-func iterator to be used as a query source, including custom
+// collections that expose an iterator method.
+func FromSeq[T any](source iter.Seq[T]) Query[T] {
+	return Query[T]{
+		Iterate: source,
 	}
 }
 
 // Range generates a sequence of integral numbers within a specified range.
-func Range(start, count int) Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
+func Range(start, count int) Query[int] {
+	return Query[int]{
+		Iterate: func(yield func(int) bool) {
 			end := start + count
 			for i := start; i < end; i++ {
 				if !yield(i) {
@@ -185,18 +152,20 @@ func Range(start, count int) Query {
 				}
 			}
 		},
+		size: max(count, 0),
 	}
 }
 
 // Repeat generates a sequence that contains one repeated value.
-func Repeat[T any](value T, count int) Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
+func Repeat[T any](value T, count int) Query[T] {
+	return Query[T]{
+		Iterate: func(yield func(T) bool) {
 			for i := 0; i < count; i++ {
 				if !yield(value) {
 					return
 				}
 			}
 		},
+		size: max(count, 0),
 	}
 }

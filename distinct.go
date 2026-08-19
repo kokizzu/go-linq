@@ -2,14 +2,19 @@ package linq
 
 // Distinct method returns distinct elements from a collection. The result is an
 // unordered collection that contains no duplicate values.
-func (q Query) Distinct() Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
-			set := make(map[any]struct{})
+//
+// Elements of basic comparable kinds (integers, floats, complex numbers,
+// strings, booleans) are tracked in a strongly-typed set with no boxing. All
+// other element types are tracked by their boxed (interface) values, so for
+// them this method panics if T is not a comparable type at runtime; DistinctBy
+// with a comparable key selector is the fast path for such types.
+func (q Query[T]) Distinct() Query[T] {
+	return Query[T]{
+		Iterate: func(yield func(T) bool) {
+			set := newSeenSet[T]()
 
-			q.Iterate(func(item any) bool {
-				if _, seen := set[item]; !seen {
-					set[item] = struct{}{}
+			q.Iterate(func(item T) bool {
+				if set.add(item) {
 					return yield(item)
 				}
 
@@ -24,37 +29,45 @@ func (q Query) Distinct() Query {
 //
 // NOTE: Distinct method on OrderedQuery type has better performance than
 // Distinct method on Query type.
-func (oq OrderedQuery) Distinct() OrderedQuery {
-	return OrderedQuery{
-		orders: oq.orders,
-		Query: Query{
-			Iterate: func(yield func(any) bool) {
-				var previous any
-				isFirst := true
+func (oq OrderedQuery[T]) Distinct() OrderedQuery[T] {
+	distinct := Query[T]{
+		Iterate: func(yield func(T) bool) {
+			equal := equalFor[T]()
+			var previous T
+			isFirst := true
 
-				oq.Iterate(func(item any) bool {
-					if isFirst || item != previous {
-						previous = item
-						isFirst = false
-						return yield(item)
-					}
+			oq.Iterate(func(item T) bool {
+				if isFirst || !equal(item, previous) {
+					previous = item
+					isFirst = false
+					return yield(item)
+				}
 
-					return true
-				})
-			},
+				return true
+			})
 		},
+	}
+
+	return OrderedQuery[T]{
+		compares: oq.compares,
+		original: distinct,
+		Query:    distinct,
 	}
 }
 
 // DistinctBy method returns distinct elements from a collection. This method
 // executes selector function for each element to determine a value to compare.
 // The result is an unordered collection that contains no duplicate values.
-func (q Query) DistinctBy(selector func(any) any) Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
-			set := make(map[any]struct{})
+//
+// DistinctBy is a generic method: the comparison key type TKey is inferred from
+// the selector function and must be comparable. Elements are tracked in a
+// strongly-typed set, so no boxing occurs.
+func (q Query[T]) DistinctBy[TKey comparable](selector func(T) TKey) Query[T] {
+	return Query[T]{
+		Iterate: func(yield func(T) bool) {
+			set := make(map[TKey]struct{})
 
-			q.Iterate(func(item any) bool {
+			q.Iterate(func(item T) bool {
 				key := selector(item)
 
 				if _, seen := set[key]; !seen {
@@ -66,27 +79,4 @@ func (q Query) DistinctBy(selector func(any) any) Query {
 			})
 		},
 	}
-}
-
-// DistinctByT is the typed version of DistinctBy.
-//
-//   - selectorFn is of type "func(TSource) TSource".
-//
-// NOTE: DistinctBy has better performance than DistinctByT.
-func (q Query) DistinctByT(selectorFn any) Query {
-	selectorFunc, ok := selectorFn.(func(any) any)
-	if !ok {
-		selectorGenericFunc, err := newGenericFunc(
-			"DistinctByT", "selectorFn", selectorFn,
-			simpleParamValidator(newElemTypeSlice(new(genericType)), newElemTypeSlice(new(genericType))),
-		)
-		if err != nil {
-			panic(err)
-		}
-
-		selectorFunc = func(item any) any {
-			return selectorGenericFunc.Call(item)
-		}
-	}
-	return q.DistinctBy(selectorFunc)
 }

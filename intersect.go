@@ -4,22 +4,28 @@ package linq
 // provided input collection. The intersection of two sets A and B is defined as
 // the set that contains all the elements of A that also appear in B, but no
 // other elements.
-func (q Query) Intersect(q2 Query) Query {
-	return Query{
-		Iterate: func(yield func(any) bool) {
-			set := make(map[any]struct{})
-			for item := range q2.Iterate {
-				set[item] = struct{}{}
-			}
+//
+// Elements of basic comparable kinds (integers, floats, complex numbers,
+// strings, booleans) are tracked in a strongly-typed set with no boxing. All
+// other element types are tracked by their boxed (interface) values, so for
+// them this method panics if T is not a comparable type at runtime;
+// IntersectBy with a comparable key selector is the fast path for such types.
+func (q Query[T]) Intersect(q2 Query[T]) Query[T] {
+	return Query[T]{
+		Iterate: func(yield func(T) bool) {
+			set := newSeenSet[T]()
+			q2.Iterate(func(item T) bool {
+				set.add(item)
+				return true
+			})
 
-			for item := range q.Iterate {
-				if _, exists := set[item]; exists {
-					delete(set, item)
-					if !yield(item) {
-						return
-					}
+			q.Iterate(func(item T) bool {
+				if set.has(item) {
+					set.del(item)
+					return yield(item)
 				}
-			}
+				return true
+			})
 		},
 	}
 }
@@ -30,48 +36,25 @@ func (q Query) Intersect(q2 Query) Query {
 // other elements.
 //
 // IntersectBy invokes a transform function on each element of both collections.
-func (q Query) IntersectBy(q2 Query,
-	selector func(any) any) Query {
+// It is a generic method: the comparison key type TKey is inferred from the
+// selector function and must be comparable.
+func (q Query[T]) IntersectBy[TKey comparable](q2 Query[T], selector func(T) TKey) Query[T] {
+	return Query[T]{
+		Iterate: func(yield func(T) bool) {
+			set := make(map[TKey]struct{})
+			q2.Iterate(func(item T) bool {
+				set[selector(item)] = struct{}{}
+				return true
+			})
 
-	return Query{
-		Iterate: func(yield func(any) bool) {
-			set := make(map[any]struct{})
-			for item := range q2.Iterate {
-				key := selector(item)
-				set[key] = struct{}{}
-			}
-
-			for item := range q.Iterate {
+			q.Iterate(func(item T) bool {
 				key := selector(item)
 				if _, exists := set[key]; exists {
 					delete(set, key)
-					if !yield(item) {
-						return
-					}
+					return yield(item)
 				}
-			}
+				return true
+			})
 		},
 	}
-}
-
-// IntersectByT is the typed version of IntersectBy.
-//
-//   - selectorFn is of type "func(TSource) TSource"
-//
-// NOTE: IntersectBy has better performance than IntersectByT.
-func (q Query) IntersectByT(q2 Query,
-	selectorFn any) Query {
-	selectorGenericFunc, err := newGenericFunc(
-		"IntersectByT", "selectorFn", selectorFn,
-		simpleParamValidator(newElemTypeSlice(new(genericType)), newElemTypeSlice(new(genericType))),
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	selectorFunc := func(item any) any {
-		return selectorGenericFunc.Call(item)
-	}
-
-	return q.IntersectBy(q2, selectorFunc)
 }
