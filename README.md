@@ -1,4 +1,4 @@
-# go-linq [![GoDoc](https://godoc.org/github.com/ahmetb/go-linq?status.svg)](https://godoc.org/github.com/ahmetb/go-linq/v5) [![Build Status](https://github.com/ahmetb/go-linq/actions/workflows/ci.yml/badge.svg?branch=v5)](https://github.com/ahmetb/go-linq/actions/workflows/ci.yml) [![Coverage Status](https://coveralls.io/repos/github/ahmetb/go-linq/badge.svg?branch=v5)](https://coveralls.io/github/ahmetb/go-linq?branch=v5) [![Go Report Card](https://goreportcard.com/badge/github.com/ahmetb/go-linq)](https://goreportcard.com/report/github.com/ahmetb/go-linq)
+# go-linq [![GoDoc](https://godoc.org/github.com/ahmetb/go-linq?status.svg)](https://godoc.org/github.com/ahmetb/go-linq/v5) [![Build Status](https://github.com/ahmetb/go-linq/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ahmetb/go-linq/actions/workflows/ci.yml) [![Coverage Status](https://coveralls.io/repos/github/ahmetb/go-linq/badge.svg?branch=master)](https://coveralls.io/github/ahmetb/go-linq?branch=master) [![Go Report Card](https://goreportcard.com/badge/github.com/ahmetb/go-linq)](https://goreportcard.com/report/github.com/ahmetb/go-linq)
 
 A powerful language integrated query (LINQ) library for Go.
 
@@ -221,7 +221,7 @@ highlights:
 ## Release Notes
 
 ```text
-v5.0.0 (unreleased)
+v5.0.0 (2026-08-21)
 * Breaking change: COMPLETE REWRITE on Go 1.27 generic methods.
   - Query is now the generic Query[T]; operator callbacks are fully typed.
   - Type-changing operators (Select, SelectMany, Join, GroupJoin, GroupBy,
